@@ -29,6 +29,7 @@
     -- Find models & snapshots selected for current run
     {% set selected = [] %}
     {% set selected_tests = [] %}
+    {% set parent_ref = builtins.ref(parent_model) %}
     {% for res in selected_resources %}
         {% if not res.startswith("test.") %}
             {% do selected.append(res.split(".")[2]) %}
@@ -41,7 +42,7 @@
     {% for test in selected_tests %}
         {% set test_node = graph.nodes[test] %}
         {% for test_ref in test_node.refs %}
-            {% if parent_model == test_ref.name %}
+            {% if parent_model == test_ref.name and load_relation(parent_ref) is not none %}
                 {% do selected.append(parent_model) %}
             {% endif %}
         {% endfor %}
