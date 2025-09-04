@@ -164,10 +164,11 @@
             {%- if row_count > row_count_size_target and target.name in row_count_limit_targets -%}
                 {%- set pct = 100.0 * row_count_size_target / row_count -%}
                 {%- set sample_percentage = [pct, 0.001]|max | round(2) -%}
-                -- If relation is a view, use Bernoulli sampling because System sampling is not supported by views
-                -- 
+                -- If relation is a view, use Bernoulli (row) sampling because System (block) sampling is not supported by views
+                -- If a relation is a table, also specify a seed to make the sampling deterministic. That is fundamental to use tests
+                -- to assert conditions between two relations (e.g: dbt_utils.equal_rowcount) using an upstream model from production 
                 {%- if return_rel.is_view -%}
-                    {%- set return_rel = "(" ~ return_rel ~ " SAMPLE ROW (" ~ sample_percentage ~ ") SEED(1) )" -%}
+                    {%- set return_rel = "(" ~ return_rel ~ " SAMPLE ROW (" ~ sample_percentage ~ "))" -%}
                 {% else %}
                     {%- set return_rel = "(" ~ return_rel ~ " SAMPLE BLOCK (" ~ sample_percentage ~ ") SEED(1) )" -%}
                 {% endif %}
