@@ -1,3 +1,24 @@
+{#
+    Macro: ref (upstream_prod)
+    Description: Custom ref macro that fetches relations from production database for dev/ci environments.
+                 Row count limiting is delegated to the project-level apply_row_count_limits macro.
+    
+    Parameters:
+        - parent_arg_1: Model name (1-arg ref) or project name (2-arg ref)
+        - parent_arg_2: Model name when using 2-arg ref, None otherwise
+        - prod_database: Production database name
+        - prod_schema: Production schema name
+        - enabled: Whether upstream_prod is enabled
+        - fallback: Whether to fall back to dev relation if prod doesn't exist
+        - env_schemas: Whether to use generate_schema_name macro for schema resolution
+        - version: Model version for versioned models
+        - prefer_recent: Return the most recently updated relation (dev or prod)
+        - env_dbs: Whether to use generate_database_name macro for database resolution
+        - prefer_current: Prefer current target relation if it exists
+        - row_count_size_target: Maximum rows before sampling kicks in
+        - row_count_limit_targets: List of target environments where sampling applies
+#}
+
 {% macro ref(
     parent_arg_1,
     parent_arg_2=None, 
@@ -11,7 +32,7 @@
     env_dbs=var("upstream_prod_env_dbs", False),
     prefer_current=var("upstream_prod_prefer_current_target", False),
     row_count_size_target=var("upstream_prod_row_count_size_target", 0),
-    row_count_limit_targets=var("upstream_prod_row_count_limit_targets", None)
+    row_count_limit_targets=var("upstream_prod_row_count_limit_targets", [])
 ) %}
     {{ return(adapter.dispatch("ref", "upstream_prod")(
         parent_arg_1, 
@@ -45,13 +66,12 @@
     row_count_size_target,
     row_count_limit_targets
 ) %}
-    /***************
-    Handle two-argument refs
-
-    For packages, the project name is the name of the package, e.g. model.facebook_ads.facebook_ads__account_report,
-    so we can't simply use the user's project name when one isn't supplied. Instead we will match on just the model
-    name - not project + model name - when only one arg (the model name) is supplied.
-    ***************/
+    {#
+        Handle two-argument refs
+        For packages, the project name is the name of the package, e.g. model.facebook_ads.facebook_ads__account_report,
+        so we can't simply use the user's project name when one isn't supplied. Instead we will match on just the model
+        name - not project + model name - when only one arg (the model name) is supplied.
+    #}
     {% if parent_arg_2 is none %}
         {% set parent_project = None %}
         {% set parent_model = parent_arg_1 %}
@@ -63,7 +83,7 @@
     {% endif %}
     {% set current_model = this.name if this is defined else "unknown model" %}
 
-    -- Return builtin ref for ephemeral models, during parsing or when disabled
+    {# Return builtin ref for ephemeral models, during parsing or when disabled #}
     {% if execute is false
         or enabled is false
         or parent_ref.is_cte
@@ -73,51 +93,52 @@
         {{ return(parent_ref) }}
     {% endif %}
 
-    -- Raise error if at least one required variable is not set
+    {# Raise error if at least one required variable is not set #}
     {{ upstream_prod.check_reqd_vars(prod_database, prod_schema, env_schemas, env_dbs) }}
 
     {% set selected = upstream_prod.find_selected_nodes(parent_model, parent_project) %}
-    -- Use dev relations for models being built during the current run
+    
+    {# Use dev relations for models being built during the current run #}
     {% if parent_model in selected %}
         {{ return(parent_ref) }}
-    -- Find prod version of parent ref
+    
+    {# Find prod version of parent ref #}
     {% else %}
         {% set parent_node = upstream_prod.find_model_node(parent_model, parent_project, version) %}
         
-        -- Set prod schema name
+        {# Set prod schema name #}
         {% if parent_node.resource_type == "snapshot" and parent_node.config.target_schema is not none %}
-            -- When target_schema is set the schema name is the same regardless of the environment.
-            -- It is optional as of dbt v1.9. If it isn't set, the generate_schema_name macro is used
-            -- in the same way as for models.
+            {# When target_schema is set the schema name is the same regardless of the environment.
+               It is optional as of dbt v1.9. If it isn't set, the generate_schema_name macro is used
+               in the same way as for models. #}
             {% set parent_schema = parent_node.schema %}
         {% elif env_schemas is true %}
-            -- Schema generated with custom macro
+            {# Schema generated with custom macro #}
             {% set custom_schema_name = parent_node.config.schema %}
             {% set parent_schema = generate_schema_name(custom_schema_name, parent_node, True) | trim %}
         {% elif prod_schema is none %}
-            -- No prod_schema = one-DB-per-env setup with same schema structure in all
+            {# No prod_schema = one-DB-per-env setup with same schema structure in all #}
             {% set parent_schema = parent_ref.schema %}
         {% else %}
-            -- Schema structure is <env>[_<level>], e.g. prod, prod_stg or dev_int 
+            {# Schema structure is <env>[_<level>], e.g. prod, prod_stg or dev_int #}
             {% set parent_schema = parent_ref.schema | replace(target.schema, prod_schema) %}
         {% endif %}
 
-        -- Set prod database name
+        {# Set prod database name #}
         {% if env_dbs is true %}
-            -- Database generated with custom macro
+            {# Database generated with custom macro #}
             {% set parent_database = generate_database_name(prod_database, parent_node, True) | trim %}
         {% else %}
             {% set parent_database = prod_database or parent_ref.database %}
         {% endif %}
 
-        /***************
-        Check whether the relations have been materialised in both envs
-        
-        prod_rel_name helps the package find the correct prod relation for projects using a custom 
-        generate_alias_name macro. It assumes that custom aliases are only used in dev envs and prod
-        relations always have the same name as the model (+ version suffix when needed).
-        It's hacky but it seems to work. 
-        ***************/
+        {#
+            Check whether the relations have been materialised in both envs
+            
+            prod_rel_name helps the package find the correct prod relation for projects using a custom 
+            generate_alias_name macro. It assumes that custom aliases are only used in dev envs and prod
+            relations always have the same name as the model (+ version suffix when needed).
+        #}
         {% set re = modules.re %}
         {% set prod_rel_name = re.search("\w+(?=\.)", parent_node.path).group() %}
         {% set prod_rel = adapter.get_relation(parent_database, parent_schema, prod_rel_name) %}
@@ -125,16 +146,16 @@
         {% set prod_exists = prod_rel is not none %}
         {% set dev_exists = dev_rel is not none %}
 
-        -- Default to returning the prod relation, but override in the circumstances outlined below
+        {# Default to returning the prod relation, but override in the circumstances outlined below #}
         {% set return_rel = prod_rel %}
 
         {% if prod_exists is true %}
-            -- When option enabled, return the mostly recently updated of dev & prod relations
+            {# When option enabled, return the mostly recently updated of dev & prod relations #}
             {% if prefer_recent is true and dev_exists is true %}
-                -- Find when dev & prod relations were last updated
+                {# Find when dev & prod relations were last updated #}
                 {% set dev_updated = upstream_prod.get_table_update_ts(dev_rel) %}
                 {% set prod_updated = upstream_prod.get_table_update_ts(prod_rel) %}
-                -- Return dev relation if it exists and is fresher than prod
+                {# Return dev relation if it exists and is fresher than prod #}
                 {% if dev_updated > prod_updated %}
                     {{ log("[" ~ current_model ~ "] " ~ parent_ref.table ~ " fresher in " ~ target.name ~ " than prod, switching to " ~ target.name ~ " relation", info=True) }}
                     {% set return_rel = dev_rel %}
@@ -144,7 +165,7 @@
                 {% set return_rel = dev_rel %}
             {% endif %}
         {% elif dev_exists %}
-            -- Return dev relation if prod doesn't exist & fallback is enabled
+            {# Return dev relation if prod doesn't exist & fallback is enabled #}
             {% if fallback is true %}
                 {{ log("[" ~ current_model ~ "] " ~ parent_ref.table ~ " model exists in " ~ target.name ~ ", switching to " ~ target.name ~ " relation", info=True) }}
                 {% set return_rel = dev_rel %}
@@ -155,25 +176,21 @@
             {{ upstream_prod.raise_ref_not_found_error(current_model, parent_database, parent_schema, prod_rel_name) }}
         {% endif %}
 
-        -- Adjust output if --empty flag was used
+        {# Adjust output if --empty flag was used #}
         {% if flags.EMPTY %}
             {{ return("(select * from " ~ return_rel ~ " where false limit 0)") }}
         {% else %}
-            {% set row_count = upstream_prod.get_total_row_count(return_rel, parent_ref.table) %}
-            -- Only sample if table is larger than row_count_size_target and target environment is in row_count_limit_targets variable
-            {%- if row_count > row_count_size_target and target.name in row_count_limit_targets -%}
-                {%- set pct = 100.0 * row_count_size_target / row_count -%}
-                {%- set sample_percentage = [pct, 0.001]|max | round(2) -%}
-                -- If relation is a view, use Bernoulli (row) sampling because System (block) sampling is not supported by views
-                -- If a relation is a table, also specify a seed to make the sampling deterministic. That is fundamental to use tests
-                -- to assert conditions between two relations (e.g: dbt_utils.equal_rowcount) using an upstream model from production 
-                {%- if return_rel.is_view -%}
-                    {%- set return_rel = "(" ~ return_rel ~ " SAMPLE ROW (" ~ sample_percentage ~ "))" -%}
-                {% else %}
-                    {%- set return_rel = "(" ~ return_rel ~ " SAMPLE BLOCK (" ~ sample_percentage ~ ") SEED(1) )" -%}
-                {% endif %}
-            {% endif %}
-            {{ return(return_rel) }}
+            {# 
+                Apply row count limiting using the decoupled project-level macro.
+                This allows row count limiting to be maintained independently of upstream_prod.
+            #}
+            {% set limited_rel = apply_row_count_limits(
+                return_rel,
+                parent_ref.table,
+                row_count_size_target,
+                row_count_limit_targets
+            ) %}
+            {{ return(limited_rel) }}
         {% endif %}
 
     {% endif %}
