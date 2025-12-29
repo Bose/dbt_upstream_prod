@@ -31,8 +31,8 @@
     prefer_recent=var("upstream_prod_prefer_recent", False),
     env_dbs=var("upstream_prod_env_dbs", False),
     prefer_current=var("upstream_prod_prefer_current_target", False),
-    row_count_size_target=var("upstream_prod_row_count_size_target", 0),
-    row_count_limit_targets=var("upstream_prod_row_count_limit_targets", [])
+    row_count_size_target=var("row_count_size_target", 0),
+    row_count_limit_targets=var("row_count_limit_targets", [])
 ) %}
     {{ return(adapter.dispatch("ref", "upstream_prod")(
         parent_arg_1, 
